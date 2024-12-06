@@ -1,0 +1,123 @@
+trigger:
+- main  
+
+variables:
+  
+  containerRegistry: 'myacr.azurecr.io'
+  imageName: 'nodejs-api-app'
+  dockerfilePath: './Dockerfile'
+  dockerComposeFilePath: './docker-compose.yml'  
+  terraformDirectory: './terraform'
+  terraformBackendConfig: './terraform/main.tf'  
+  
+  
+  gcpProject: '12356723984379873493'
+  gcpRegion: 'asia-south1'
+  gcpServiceAccountKey: $(GCP_SERVICE_ACCOUNT_KEY)  
+  
+ 
+  acrUsername: $(ACR_USERNAME)
+  acrPassword: $(ACR_PASSWORD)
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildNodeApp
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      
+      - task: Checkout@1
+      - task: UseNode@2
+        inputs:
+          versionSpec: '18.x'  
+      - script: |
+          npm install
+        displayName: 'Install Node.js dependencies'
+      - script: |
+          npm test
+        displayName: 'Run unit tests'
+
+- stage: Dockerize
+  jobs:
+  - job: BuildAndPushDockerImage
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: Checkout@1
+
+      - task: Docker@2
+        inputs:
+          containerRegistry: $(containerRegistry)
+          repository: $(imageName)
+          command: 'buildAndPush'
+          Dockerfile: $(dockerfilePath)
+          buildContext: .
+          tags: |
+            latest
+
+- stage: DeployInfrastructure
+  jobs:
+  - job: DeployInfrastructureWithTerraform
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: Checkout@1
+      - task: TerraformInstaller@0
+        inputs:
+          terraformVersion: '1.3.0'  
+
+
+      - task: GoogleCloudSDKInstaller@0
+        inputs:
+          versionSpec: 'latest'
+
+      - script: |
+          terraform init -backend-config=$(terraformBackendConfig)
+        workingDirectory: $(terraformDirectory)
+        displayName: 'Terraform Init'
+
+ 
+      - script: |
+          terraform plan -out=tfplan
+        workingDirectory: $(terraformDirectory)
+        displayName: 'Terraform Plan'
+
+
+      - script: |
+          terraform apply -auto-approve tfplan
+        workingDirectory: $(terraformDirectory)
+        displayName: 'Terraform Apply'
+
+- stage: DeployApp
+  jobs:
+  - job: DeployContainerizedApp
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+
+      - task: Checkout@1
+
+
+      - script: |
+          docker pull $(containerRegistry)/$(imageName):latest
+        displayName: 'Pull Docker Image from ACR'
+
+
+      - script: |
+          docker run -d -p 80:80 $(containerRegistry)/$(imageName):latest
+        displayName: 'Deploy Docker Container'
+
+- stage: PostDeploy
+  jobs:
+  - job: RunPostDeployTests
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+
+      - task: Checkout@1
+
+
+      - script: |
+          curl http://localhost:80/health
+        displayName: 'Run post-deploy tests'
